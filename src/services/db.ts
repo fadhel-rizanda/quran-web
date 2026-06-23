@@ -1,6 +1,5 @@
 import { Redis } from '@upstash/redis';
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
+import type { Database } from 'sqlite';
 import fs from 'fs';
 import path from 'path';
 
@@ -68,6 +67,10 @@ async function getSqliteDb(): Promise<Database> {
   if (!fs.existsSync(dbDirectory)) {
     fs.mkdirSync(dbDirectory, { recursive: true });
   }
+
+  // Dynamic import to prevent loading native binaries in serverless production env
+  const sqlite3 = (await import('sqlite3')).default;
+  const { open } = await import('sqlite');
 
   sqliteDb = await open({
     filename: dbFilePath,
