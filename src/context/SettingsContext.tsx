@@ -1,5 +1,5 @@
 'use client';
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 
 export interface LanguageConfig {
@@ -31,7 +31,7 @@ interface SettingsContextProps {
   isRTL: boolean;
   showArabic: boolean;
   setShowArabic: (val: boolean) => void;
-  syncWithServer: (settings: any) => Promise<void>;
+  syncWithServer: (settings: any) => void;
   isLoading: boolean;
 }
 
@@ -111,18 +111,27 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     fetchServerSettings();
   }, [status]);
 
-  // Sync to database helper
-  const syncWithServer = async (updatedSettings: any) => {
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sync to database helper (Debounced by 1.5s to preserve Vercel execution limits & Upstash requests)
+  const syncWithServer = (updatedSettings: any) => {
     if (status !== 'authenticated') return;
-    try {
-      await fetch('/api/user/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings: updatedSettings }),
-      });
-    } catch (e) {
-      console.error('Error syncing with database', e);
+    
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
     }
+
+    syncTimeoutRef.current = setTimeout(async () => {
+      try {
+        await fetch('/api/user/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: updatedSettings }),
+        });
+      } catch (e) {
+        console.error('Error syncing with database', e);
+      }
+    }, 1500);
   };
 
   const setTheme = async (newTheme: ThemeType) => {

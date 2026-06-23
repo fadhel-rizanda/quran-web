@@ -1,4 +1,6 @@
 import { Redis } from '@upstash/redis';
+import sqlite3 from 'sqlite3';
+import { open, Database } from 'sqlite';
 import fs from 'fs';
 import path from 'path';
 
@@ -41,6 +43,7 @@ export interface UserData {
   activeViewIndex: number;
 }
 
+// 1. Cloud Storage Configuration (Redis / Upstash for Vercel)
 const redisUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
@@ -53,40 +56,34 @@ const redis = isRedisEnabled
     })
   : null;
 
+// 2. Local Storage Configuration (SQLite)
 const dbDirectory = path.join(process.cwd(), 'data');
-const dbFilePath = path.join(dbDirectory, 'db.json');
+const dbFilePath = path.join(dbDirectory, 'quran.db');
 
-// Initialize folder and file if they don't exist (Local JSON mode)
-function ensureDbFile() {
+let sqliteDb: Database | null = null;
+
+async function getSqliteDb(): Promise<Database> {
+  if (sqliteDb) return sqliteDb;
+
   if (!fs.existsSync(dbDirectory)) {
     fs.mkdirSync(dbDirectory, { recursive: true });
   }
-  if (!fs.existsSync(dbFilePath)) {
-    fs.writeFileSync(dbFilePath, JSON.stringify({ users: {} }, null, 2), 'utf-8');
-  }
-}
 
-// Load database (Local JSON mode)
-function loadLocalDb(): Record<string, UserData> {
-  ensureDbFile();
-  try {
-    const data = fs.readFileSync(dbFilePath, 'utf-8');
-    const parsed = JSON.parse(data);
-    return parsed.users || {};
-  } catch (e) {
-    console.error('Failed to load JSON database, resetting', e);
-    return {};
-  }
-}
+  sqliteDb = await open({
+    filename: dbFilePath,
+    driver: sqlite3.Database,
+  });
 
-// Save database (Local JSON mode)
-function saveLocalDb(users: Record<string, UserData>) {
-  ensureDbFile();
-  try {
-    fs.writeFileSync(dbFilePath, JSON.stringify({ users }, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Failed to write JSON database', e);
-  }
+  // Create table to store structured user profiles as JSON document rows
+  await sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      email TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  return sqliteDb;
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -119,21 +116,30 @@ const getDefaultViews = (): BookmarkView[] => [
   },
 ];
 
-// Asynchronous Get User Data (works for both local and cloud modes)
+// Asynchronous Get User Data (works for SQLite and Redis)
 export async function getUserData(email: string): Promise<UserData> {
   const lowerEmail = email.toLowerCase();
-
   let user: UserData | null = null;
 
   if (isRedisEnabled && redis) {
     try {
       user = await redis.get<UserData>(`user:${lowerEmail}`);
     } catch (e) {
-      console.error('Failed to fetch from Upstash Redis, falling back to empty profile', e);
+      console.error('Failed to fetch from Upstash Redis, falling back to SQLite', e);
     }
-  } else {
-    const users = loadLocalDb();
-    user = users[lowerEmail] || null;
+  }
+
+  // Fallback to SQLite (either because Redis is disabled or failed)
+  if (!user) {
+    try {
+      const db = await getSqliteDb();
+      const row = await db.get('SELECT data FROM user_profiles WHERE email = ?', lowerEmail);
+      if (row && row.data) {
+        user = JSON.parse(row.data);
+      }
+    } catch (e) {
+      console.error('Failed to load from SQLite database', e);
+    }
   }
 
   if (!user) {
@@ -146,7 +152,7 @@ export async function getUserData(email: string): Promise<UserData> {
     };
   }
 
-  // Merge with defaults to ensure fallback consistency
+  // Merge with defaults to ensure complete profile structure
   return {
     email: lowerEmail,
     settings: { ...DEFAULT_SETTINGS, ...user.settings },
@@ -156,7 +162,7 @@ export async function getUserData(email: string): Promise<UserData> {
   };
 }
 
-// Asynchronous Save User Data (works for both local and cloud modes)
+// Asynchronous Save User Data (syncs to SQLite or Redis)
 export async function saveUserData(email: string, updates: Partial<Omit<UserData, 'email'>>): Promise<UserData> {
   const lowerEmail = email.toLowerCase();
   const current = await getUserData(lowerEmail);
@@ -169,16 +175,26 @@ export async function saveUserData(email: string, updates: Partial<Omit<UserData
     activeViewIndex: updates.activeViewIndex !== undefined ? updates.activeViewIndex : current.activeViewIndex,
   };
 
+  // Sync to Upstash Redis if in cloud production (Vercel)
   if (isRedisEnabled && redis) {
     try {
       await redis.set(`user:${lowerEmail}`, JSON.stringify(updatedUser));
     } catch (e) {
       console.error('Failed to save to Upstash Redis', e);
     }
-  } else {
-    const users = loadLocalDb();
-    users[lowerEmail] = updatedUser;
-    saveLocalDb(users);
+  }
+
+  // Sync locally to SQLite database (quran.db)
+  try {
+    const db = await getSqliteDb();
+    await db.run(
+      'INSERT OR REPLACE INTO user_profiles (email, data, updated_at) VALUES (?, ?, ?)',
+      lowerEmail,
+      JSON.stringify(updatedUser),
+      Date.now()
+    );
+  } catch (e) {
+    console.error('Failed to save to SQLite database', e);
   }
 
   return updatedUser;

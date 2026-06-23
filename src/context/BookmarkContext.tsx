@@ -1,5 +1,5 @@
 'use client';
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 
 export interface Bookmark {
@@ -143,22 +143,31 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     fetchServerBookmarks();
   }, [status]);
 
-  // Sync to database helper
-  const syncWithServer = async (updatedCollections: BookmarkCollection[], updatedViews: BookmarkView[], updatedActiveIndex: number) => {
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sync to database helper (Debounced by 1.5s to preserve Vercel execution limits & Upstash requests)
+  const syncWithServer = (updatedCollections: BookmarkCollection[], updatedViews: BookmarkView[], updatedActiveIndex: number) => {
     if (status !== 'authenticated') return;
-    try {
-      await fetch('/api/user/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          collections: updatedCollections,
-          views: updatedViews,
-          activeViewIndex: updatedActiveIndex,
-        }),
-      });
-    } catch (e) {
-      console.error('Error syncing bookmarks with server', e);
+    
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
     }
+
+    syncTimeoutRef.current = setTimeout(async () => {
+      try {
+        await fetch('/api/user/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            collections: updatedCollections,
+            views: updatedViews,
+            activeViewIndex: updatedActiveIndex,
+          }),
+        });
+      } catch (e) {
+        console.error('Error syncing bookmarks with server', e);
+      }
+    }, 1500);
   };
 
   const saveCollections = async (newCollections: BookmarkCollection[]) => {
