@@ -40,6 +40,7 @@ export interface UserData {
   collections: BookmarkCollection[];
   views: BookmarkView[];
   activeViewIndex: number;
+  isNewUser?: boolean;
 }
 
 // 1. Cloud Storage Configuration (Redis / Upstash for Vercel)
@@ -152,6 +153,7 @@ export async function getUserData(email: string): Promise<UserData> {
       collections: getDefaultCollections(),
       views: getDefaultViews(),
       activeViewIndex: 0,
+      isNewUser: true,
     };
   }
 

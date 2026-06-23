@@ -94,13 +94,57 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const res = await fetch('/api/user/sync');
         if (res.ok) {
           const data = await res.json();
-          if (data.settings) {
+          if (data.isNewUser) {
+            // Push current guest settings from state / local storage to database immediately
+            const storedTheme = localStorage.getItem(LOCAL_STORAGE_KEYS.THEME) as ThemeType || 'system';
+            const storedArabicSize = localStorage.getItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE) ? parseInt(localStorage.getItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE)!, 10) : 28;
+            const storedTransSize = localStorage.getItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE) ? parseInt(localStorage.getItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE)!, 10) : 16;
+            let storedLangs = ['id'];
+            const langsJson = localStorage.getItem(LOCAL_STORAGE_KEYS.LANGUAGES);
+            if (langsJson) {
+              try {
+                storedLangs = JSON.parse(langsJson);
+              } catch (e) {
+                console.error(e);
+              }
+            }
+            const storedShowArabic = localStorage.getItem(LOCAL_STORAGE_KEYS.SHOW_ARABIC) !== 'false';
+
+            const localSettings = {
+              theme: storedTheme,
+              arabicFontSize: storedArabicSize,
+              translationFontSize: storedTransSize,
+              selectedLanguages: storedLangs,
+              showArabic: storedShowArabic,
+            };
+
+            await fetch('/api/user/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ settings: localSettings }),
+            });
+          } else if (data.settings) {
             const { theme, arabicFontSize, translationFontSize, selectedLanguages, showArabic } = data.settings;
-            if (theme) setThemeState(theme);
-            if (arabicFontSize) setArabicFontSizeState(arabicFontSize);
-            if (translationFontSize) setTranslationFontSizeState(translationFontSize);
-            if (selectedLanguages) setSelectedLanguagesState(selectedLanguages);
-            if (showArabic !== undefined) setShowArabicState(showArabic);
+            if (theme) {
+              setThemeState(theme);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.THEME, theme);
+            }
+            if (arabicFontSize) {
+              setArabicFontSizeState(arabicFontSize);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE, arabicFontSize.toString());
+            }
+            if (translationFontSize) {
+              setTranslationFontSizeState(translationFontSize);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE, translationFontSize.toString());
+            }
+            if (selectedLanguages) {
+              setSelectedLanguagesState(selectedLanguages);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.LANGUAGES, JSON.stringify(selectedLanguages));
+            }
+            if (showArabic !== undefined) {
+              setShowArabicState(showArabic);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.SHOW_ARABIC, showArabic ? 'true' : 'false');
+            }
           }
         }
       } catch (e) {

@@ -129,10 +129,79 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const res = await fetch('/api/user/sync');
         if (res.ok) {
           const data = await res.json();
-          if (data.collections) setCollections(data.collections);
-          if (data.views) setBookmarkViews(data.views);
-          if (typeof data.activeViewIndex === 'number') {
-            setActiveViewIndexState(data.activeViewIndex);
+          if (data.isNewUser) {
+            // Push current guest bookmarks from local storage to database immediately
+            const storedCollections = localStorage.getItem(LOCAL_STORAGE_KEYS.COLLECTIONS);
+            const storedViews = localStorage.getItem(LOCAL_STORAGE_KEYS.VIEWS);
+            const storedActiveViewIndex = localStorage.getItem(LOCAL_STORAGE_KEYS.ACTIVE_VIEW_INDEX);
+
+            let parsedCollections: BookmarkCollection[] = [];
+            if (storedCollections) {
+              try {
+                parsedCollections = JSON.parse(storedCollections);
+              } catch (e) {
+                console.error(e);
+              }
+            } else {
+              parsedCollections = [
+                {
+                  id: 'default_favs',
+                  name: 'Favorites',
+                  createdAt: Date.now(),
+                  bookmarks: [],
+                },
+              ];
+            }
+
+            let parsedViews: BookmarkView[] = [];
+            if (storedViews) {
+              try {
+                parsedViews = JSON.parse(storedViews);
+              } catch (e) {
+                console.error(e);
+              }
+            } else {
+              parsedViews = [
+                {
+                  id: 'default_view_all',
+                  name: 'All Bookmarks',
+                  selectedCollectionId: 'all',
+                },
+                {
+                  id: 'default_view_favs',
+                  name: 'My Favorites',
+                  selectedCollectionId: 'default_favs',
+                },
+              ];
+            }
+
+            let parsedActiveIndex = 0;
+            if (storedActiveViewIndex) {
+              parsedActiveIndex = parseInt(storedActiveViewIndex, 10);
+            }
+
+            await fetch('/api/user/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                collections: parsedCollections,
+                views: parsedViews,
+                activeViewIndex: parsedActiveIndex,
+              }),
+            });
+          } else {
+            if (data.collections) {
+              setCollections(data.collections);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.COLLECTIONS, JSON.stringify(data.collections));
+            }
+            if (data.views) {
+              setBookmarkViews(data.views);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.VIEWS, JSON.stringify(data.views));
+            }
+            if (typeof data.activeViewIndex === 'number') {
+              setActiveViewIndexState(data.activeViewIndex);
+              localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_VIEW_INDEX, data.activeViewIndex.toString());
+            }
           }
         }
       } catch (e) {
