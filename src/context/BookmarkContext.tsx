@@ -40,6 +40,7 @@ interface BookmarkContextProps {
   deleteBookmarkView: (viewId: string) => void;
   updateBookmarkView: (viewId: string, updates: Partial<BookmarkView>) => void;
   isLoading: boolean;
+  isSyncing: boolean;
 }
 
 const BookmarkContext = createContext<BookmarkContextProps | undefined>(undefined);
@@ -57,6 +58,25 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [bookmarkViews, setBookmarkViews] = useState<BookmarkView[]>([]);
   const [activeViewIndex, setActiveViewIndexState] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const collectionsRef = useRef<BookmarkCollection[]>([]);
+  const bookmarkViewsRef = useRef<BookmarkView[]>([]);
+  const activeViewIndexRef = useRef<number>(0);
+  const hasFetchedRef = useRef<boolean>(false);
+
+  // Keep refs in sync with state updates as a fallback
+  useEffect(() => {
+    collectionsRef.current = collections;
+  }, [collections]);
+
+  useEffect(() => {
+    bookmarkViewsRef.current = bookmarkViews;
+  }, [bookmarkViews]);
+
+  useEffect(() => {
+    activeViewIndexRef.current = activeViewIndex;
+  }, [activeViewIndex]);
 
   // 1. Initial load from LocalStorage (Guest Mode baseline)
   useEffect(() => {
@@ -85,6 +105,7 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       localStorage.setItem(LOCAL_STORAGE_KEYS.COLLECTIONS, JSON.stringify(parsedCollections));
     }
     setCollections(parsedCollections);
+    collectionsRef.current = parsedCollections;
 
     let parsedViews: BookmarkView[] = [];
     if (storedViews) {
@@ -109,11 +130,13 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       localStorage.setItem(LOCAL_STORAGE_KEYS.VIEWS, JSON.stringify(parsedViews));
     }
     setBookmarkViews(parsedViews);
+    bookmarkViewsRef.current = parsedViews;
 
     if (storedActiveViewIndex) {
       const index = parseInt(storedActiveViewIndex, 10);
       if (index >= 0 && index < parsedViews.length) {
         setActiveViewIndexState(index);
+        activeViewIndexRef.current = index;
       }
     }
 
@@ -122,11 +145,19 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // 2. Load from server database if authenticated
   useEffect(() => {
-    if (status !== 'authenticated') return;
+    if (status !== 'authenticated') {
+      if (status === 'unauthenticated') {
+        hasFetchedRef.current = false;
+      }
+      return;
+    }
+
+    if (hasFetchedRef.current) return;
+    hasFetchedRef.current = true;
 
     const fetchServerBookmarks = async () => {
       try {
-        const res = await fetch('/api/user/sync');
+        const res = await fetch(`/api/user/sync?t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
           if (data.isNewUser) {
@@ -192,14 +223,17 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           } else {
             if (data.collections) {
               setCollections(data.collections);
+              collectionsRef.current = data.collections;
               localStorage.setItem(LOCAL_STORAGE_KEYS.COLLECTIONS, JSON.stringify(data.collections));
             }
             if (data.views) {
               setBookmarkViews(data.views);
+              bookmarkViewsRef.current = data.views;
               localStorage.setItem(LOCAL_STORAGE_KEYS.VIEWS, JSON.stringify(data.views));
             }
             if (typeof data.activeViewIndex === 'number') {
               setActiveViewIndexState(data.activeViewIndex);
+              activeViewIndexRef.current = data.activeViewIndex;
               localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_VIEW_INDEX, data.activeViewIndex.toString());
             }
           }
@@ -215,9 +249,11 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Sync to database helper (Debounced by 1.5s to preserve Vercel execution limits & Upstash requests)
-  const syncWithServer = (updatedCollections: BookmarkCollection[], updatedViews: BookmarkView[], updatedActiveIndex: number) => {
+  const syncWithServer = () => {
     if (status !== 'authenticated') return;
     
+    setIsSyncing(true);
+
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
     }
@@ -228,33 +264,38 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            collections: updatedCollections,
-            views: updatedViews,
-            activeViewIndex: updatedActiveIndex,
+            collections: collectionsRef.current,
+            views: bookmarkViewsRef.current,
+            activeViewIndex: activeViewIndexRef.current,
           }),
         });
       } catch (e) {
         console.error('Error syncing bookmarks with server', e);
+      } finally {
+        setIsSyncing(false);
       }
     }, 1500);
   };
 
   const saveCollections = async (newCollections: BookmarkCollection[]) => {
+    collectionsRef.current = newCollections;
     setCollections(newCollections);
     localStorage.setItem(LOCAL_STORAGE_KEYS.COLLECTIONS, JSON.stringify(newCollections));
-    await syncWithServer(newCollections, bookmarkViews, activeViewIndex);
+    syncWithServer();
   };
 
   const saveViews = async (newViews: BookmarkView[]) => {
+    bookmarkViewsRef.current = newViews;
     setBookmarkViews(newViews);
     localStorage.setItem(LOCAL_STORAGE_KEYS.VIEWS, JSON.stringify(newViews));
-    await syncWithServer(collections, newViews, activeViewIndex);
+    syncWithServer();
   };
 
   const setActiveViewIndex = async (index: number) => {
+    activeViewIndexRef.current = index;
     setActiveViewIndexState(index);
     localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_VIEW_INDEX, index.toString());
-    await syncWithServer(collections, bookmarkViews, index);
+    syncWithServer();
   };
 
   const addCollection = (name: string): string => {
@@ -265,17 +306,17 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       createdAt: Date.now(),
       bookmarks: [],
     };
-    const updated = [...collections, newCol];
+    const updated = [...collectionsRef.current, newCol];
     saveCollections(updated);
     return id;
   };
 
   const deleteCollection = (id: string) => {
     if (id === 'default_favs') return;
-    const updated = collections.filter((c) => c.id !== id);
+    const updated = collectionsRef.current.filter((c) => c.id !== id);
     saveCollections(updated);
 
-    const updatedViews = bookmarkViews.map((view) => {
+    const updatedViews = bookmarkViewsRef.current.map((view) => {
       if (view.selectedCollectionId === id) {
         return { ...view, selectedCollectionId: 'all', name: `${view.name} (All)` };
       }
@@ -285,7 +326,7 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const renameCollection = (id: string, name: string) => {
-    const updated = collections.map((c) => {
+    const updated = collectionsRef.current.map((c) => {
       if (c.id === id) {
         return { ...c, name };
       }
@@ -313,7 +354,7 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       notes,
     };
 
-    const updated = collections.map((c) => {
+    const updated = collectionsRef.current.map((c) => {
       if (c.id === collectionId) {
         const exists = c.bookmarks.some((b) => b.id === bookmarkId);
         if (exists) {
@@ -331,7 +372,7 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const removeBookmark = (collectionId: string, surahNumber: number, ayahNumber: number) => {
     const bookmarkId = `${surahNumber}_${ayahNumber}`;
-    const updated = collections.map((c) => {
+    const updated = collectionsRef.current.map((c) => {
       if (c.id === collectionId) {
         return { ...c, bookmarks: c.bookmarks.filter((b) => b.id !== bookmarkId) };
       }
@@ -343,10 +384,10 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const isBookmarked = (surahNumber: number, ayahNumber: number, collectionId?: string): boolean => {
     const bookmarkId = `${surahNumber}_${ayahNumber}`;
     if (collectionId) {
-      const col = collections.find((c) => c.id === collectionId);
+      const col = collectionsRef.current.find((c) => c.id === collectionId);
       return col ? col.bookmarks.some((b) => b.id === bookmarkId) : false;
     }
-    return collections.some((c) => c.bookmarks.some((b) => b.id === bookmarkId));
+    return collectionsRef.current.some((c) => c.bookmarks.some((b) => b.id === bookmarkId));
   };
 
   const addBookmarkView = (name: string, collectionId: string) => {
@@ -355,26 +396,26 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       name,
       selectedCollectionId: collectionId,
     };
-    const updated = [...bookmarkViews, newView];
+    const updated = [...bookmarkViewsRef.current, newView];
     saveViews(updated);
     setActiveViewIndex(updated.length - 1);
   };
 
   const deleteBookmarkView = (viewId: string) => {
-    if (bookmarkViews.length <= 1) return;
-    const viewToDeleteIndex = bookmarkViews.findIndex((v) => v.id === viewId);
-    const updated = bookmarkViews.filter((v) => v.id !== viewId);
+    if (bookmarkViewsRef.current.length <= 1) return;
+    const viewToDeleteIndex = bookmarkViewsRef.current.findIndex((v) => v.id === viewId);
+    const updated = bookmarkViewsRef.current.filter((v) => v.id !== viewId);
     saveViews(updated);
 
-    if (activeViewIndex >= updated.length) {
+    if (activeViewIndexRef.current >= updated.length) {
       setActiveViewIndex(updated.length - 1);
-    } else if (activeViewIndex === viewToDeleteIndex) {
+    } else if (activeViewIndexRef.current === viewToDeleteIndex) {
       setActiveViewIndex(Math.max(0, viewToDeleteIndex - 1));
     }
   };
 
   const updateBookmarkView = (viewId: string, updates: Partial<BookmarkView>) => {
-    const updated = bookmarkViews.map((v) => {
+    const updated = bookmarkViewsRef.current.map((v) => {
       if (v.id === viewId) {
         return { ...v, ...updates };
       }
@@ -400,6 +441,7 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         deleteBookmarkView,
         updateBookmarkView,
         isLoading,
+        isSyncing,
       }}>
       {children}
     </BookmarkContext.Provider>

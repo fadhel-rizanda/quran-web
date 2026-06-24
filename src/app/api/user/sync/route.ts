@@ -10,7 +10,11 @@ export async function GET() {
   }
 
   const data = await getUserData(session.user.email);
-  return NextResponse.json(data);
+  return NextResponse.json(data, {
+    headers: {
+      'Cache-Control': 'no-store, max-age=0, must-revalidate',
+    },
+  });
 }
 
 export async function POST(request: Request) {

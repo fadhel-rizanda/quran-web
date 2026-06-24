@@ -33,6 +33,7 @@ interface SettingsContextProps {
   setShowArabic: (val: boolean) => void;
   syncWithServer: (settings: any) => void;
   isLoading: boolean;
+  isSyncing: boolean;
 }
 
 const SettingsContext = createContext<SettingsContextProps | undefined>(undefined);
@@ -54,24 +55,65 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [selectedLanguages, setSelectedLanguagesState] = useState<string[]>(['id']);
   const [showArabic, setShowArabicState] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // Refs to prevent stale state closure issues in debounced sync and back-to-back updates
+  const themeRef = useRef<ThemeType>('system');
+  const arabicFontSizeRef = useRef<number>(28);
+  const translationFontSizeRef = useRef<number>(16);
+  const selectedLanguagesRef = useRef<string[]>(['id']);
+  const showArabicRef = useRef<boolean>(true);
+  const hasFetchedRef = useRef<boolean>(false);
+
+  // Keep refs in sync with state updates as a fallback
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
+  useEffect(() => {
+    arabicFontSizeRef.current = arabicFontSize;
+  }, [arabicFontSize]);
+
+  useEffect(() => {
+    translationFontSizeRef.current = translationFontSize;
+  }, [translationFontSize]);
+
+  useEffect(() => {
+    selectedLanguagesRef.current = selectedLanguages;
+  }, [selectedLanguages]);
+
+  useEffect(() => {
+    showArabicRef.current = showArabic;
+  }, [showArabic]);
 
   // 1. Initial load from LocalStorage (Guest Mode baseline)
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const storedTheme = localStorage.getItem(LOCAL_STORAGE_KEYS.THEME);
-    if (storedTheme) setThemeState(storedTheme as ThemeType);
+    if (storedTheme) {
+      setThemeState(storedTheme as ThemeType);
+      themeRef.current = storedTheme as ThemeType;
+    }
 
     const storedArabicSize = localStorage.getItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE);
-    if (storedArabicSize) setArabicFontSizeState(parseInt(storedArabicSize, 10));
+    if (storedArabicSize) {
+      setArabicFontSizeState(parseInt(storedArabicSize, 10));
+      arabicFontSizeRef.current = parseInt(storedArabicSize, 10);
+    }
 
     const storedTransSize = localStorage.getItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE);
-    if (storedTransSize) setTranslationFontSizeState(parseInt(storedTransSize, 10));
+    if (storedTransSize) {
+      setTranslationFontSizeState(parseInt(storedTransSize, 10));
+      translationFontSizeRef.current = parseInt(storedTransSize, 10);
+    }
 
     const storedLangs = localStorage.getItem(LOCAL_STORAGE_KEYS.LANGUAGES);
     if (storedLangs) {
       try {
-        setSelectedLanguagesState(JSON.parse(storedLangs));
+        const parsed = JSON.parse(storedLangs);
+        setSelectedLanguagesState(parsed);
+        selectedLanguagesRef.current = parsed;
       } catch (e) {
         console.error(e);
       }
@@ -79,7 +121,9 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const storedShowArabic = localStorage.getItem(LOCAL_STORAGE_KEYS.SHOW_ARABIC);
     if (storedShowArabic !== null) {
-      setShowArabicState(storedShowArabic === 'true');
+      const val = storedShowArabic === 'true';
+      setShowArabicState(val);
+      showArabicRef.current = val;
     }
     
     setIsLoading(false);
@@ -87,11 +131,19 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // 2. Load from server database if authenticated
   useEffect(() => {
-    if (status !== 'authenticated') return;
+    if (status !== 'authenticated') {
+      if (status === 'unauthenticated') {
+        hasFetchedRef.current = false;
+      }
+      return;
+    }
+
+    if (hasFetchedRef.current) return;
+    hasFetchedRef.current = true;
 
     const fetchServerSettings = async () => {
       try {
-        const res = await fetch('/api/user/sync');
+        const res = await fetch(`/api/user/sync?t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
           if (data.isNewUser) {
@@ -127,22 +179,27 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             const { theme, arabicFontSize, translationFontSize, selectedLanguages, showArabic } = data.settings;
             if (theme) {
               setThemeState(theme);
+              themeRef.current = theme;
               localStorage.setItem(LOCAL_STORAGE_KEYS.THEME, theme);
             }
             if (arabicFontSize) {
               setArabicFontSizeState(arabicFontSize);
+              arabicFontSizeRef.current = arabicFontSize;
               localStorage.setItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE, arabicFontSize.toString());
             }
             if (translationFontSize) {
               setTranslationFontSizeState(translationFontSize);
+              translationFontSizeRef.current = translationFontSize;
               localStorage.setItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE, translationFontSize.toString());
             }
             if (selectedLanguages) {
               setSelectedLanguagesState(selectedLanguages);
+              selectedLanguagesRef.current = selectedLanguages;
               localStorage.setItem(LOCAL_STORAGE_KEYS.LANGUAGES, JSON.stringify(selectedLanguages));
             }
             if (showArabic !== undefined) {
               setShowArabicState(showArabic);
+              showArabicRef.current = showArabic;
               localStorage.setItem(LOCAL_STORAGE_KEYS.SHOW_ARABIC, showArabic ? 'true' : 'false');
             }
           }
@@ -158,9 +215,11 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Sync to database helper (Debounced by 1.5s to preserve Vercel execution limits & Upstash requests)
-  const syncWithServer = (updatedSettings: any) => {
+  const syncWithServer = () => {
     if (status !== 'authenticated') return;
     
+    setIsSyncing(true);
+
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
     }
@@ -170,49 +229,64 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         await fetch('/api/user/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settings: updatedSettings }),
+          body: JSON.stringify({
+            settings: {
+              theme: themeRef.current,
+              arabicFontSize: arabicFontSizeRef.current,
+              translationFontSize: translationFontSizeRef.current,
+              selectedLanguages: selectedLanguagesRef.current,
+              showArabic: showArabicRef.current,
+            }
+          }),
         });
       } catch (e) {
         console.error('Error syncing with database', e);
+      } finally {
+        setIsSyncing(false);
       }
     }, 1500);
   };
 
   const setTheme = async (newTheme: ThemeType) => {
+    themeRef.current = newTheme;
     setThemeState(newTheme);
     localStorage.setItem(LOCAL_STORAGE_KEYS.THEME, newTheme);
-    await syncWithServer({ theme: newTheme, arabicFontSize, translationFontSize, selectedLanguages, showArabic });
+    syncWithServer();
   };
 
   const setArabicFontSize = async (size: number) => {
+    arabicFontSizeRef.current = size;
     setArabicFontSizeState(size);
     localStorage.setItem(LOCAL_STORAGE_KEYS.ARABIC_FONT_SIZE, size.toString());
-    await syncWithServer({ theme, arabicFontSize: size, translationFontSize, selectedLanguages, showArabic });
+    syncWithServer();
   };
 
   const setTranslationFontSize = async (size: number) => {
+    translationFontSizeRef.current = size;
     setTranslationFontSizeState(size);
     localStorage.setItem(LOCAL_STORAGE_KEYS.TRANS_FONT_SIZE, size.toString());
-    await syncWithServer({ theme, arabicFontSize, translationFontSize: size, selectedLanguages, showArabic });
+    syncWithServer();
   };
 
   const setShowArabic = async (val: boolean) => {
+    showArabicRef.current = val;
     setShowArabicState(val);
     localStorage.setItem(LOCAL_STORAGE_KEYS.SHOW_ARABIC, val ? 'true' : 'false');
-    await syncWithServer({ theme, arabicFontSize, translationFontSize, selectedLanguages, showArabic: val });
+    syncWithServer();
   };
 
   const toggleLanguage = async (code: string) => {
     let updatedLangs: string[];
-    if (selectedLanguages.includes(code)) {
-      if (selectedLanguages.length <= 1) return;
-      updatedLangs = selectedLanguages.filter((l) => l !== code);
+    if (selectedLanguagesRef.current.includes(code)) {
+      if (selectedLanguagesRef.current.length <= 1) return;
+      updatedLangs = selectedLanguagesRef.current.filter((l) => l !== code);
     } else {
-      updatedLangs = [...selectedLanguages, code];
+      updatedLangs = [...selectedLanguagesRef.current, code];
     }
+    selectedLanguagesRef.current = updatedLangs;
     setSelectedLanguagesState(updatedLangs);
     localStorage.setItem(LOCAL_STORAGE_KEYS.LANGUAGES, JSON.stringify(updatedLangs));
-    await syncWithServer({ theme, arabicFontSize, translationFontSize, selectedLanguages: updatedLangs, showArabic });
+    syncWithServer();
   };
 
   // Check if any selected language is RTL
@@ -252,6 +326,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setShowArabic,
         syncWithServer,
         isLoading,
+        isSyncing,
       }}>
       {children}
     </SettingsContext.Provider>

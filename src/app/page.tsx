@@ -1,8 +1,9 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useSettings } from '@/context/SettingsContext';
-import { BookOpen, Home, Book, Bookmark, Settings, Menu, X, LogIn, LogOut } from 'lucide-react';
+import { useBookmarks } from '@/context/BookmarkContext';
+import { BookOpen, Home, Book, Bookmark, Settings, Menu, X, LogIn, LogOut, Loader2, Check } from 'lucide-react';
 
 import SurahListTab from '@/components/SurahListTab';
 import ReaderTab from '@/components/ReaderTab';
@@ -13,10 +14,30 @@ type TabType = 'home' | 'reader' | 'bookmarks' | 'settings';
 
 export default function MainPage() {
   const { data: session, status } = useSession();
-  const { theme } = useSettings();
+  const { theme, isSyncing: isSettingsSyncing } = useSettings();
+  const { isSyncing: isBookmarkSyncing } = useBookmarks();
+
+  const isSyncing = isSettingsSyncing || isBookmarkSyncing;
 
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Sync state tracking for floating indicator
+  const [showSyncStatus, setShowSyncStatus] = useState(false);
+  const [syncStatusType, setSyncStatusType] = useState<'syncing' | 'synced'>('syncing');
+
+  useEffect(() => {
+    if (isSyncing) {
+      setShowSyncStatus(true);
+      setSyncStatusType('syncing');
+    } else if (showSyncStatus && syncStatusType === 'syncing') {
+      setSyncStatusType('synced');
+      const timer = setTimeout(() => {
+        setShowSyncStatus(false);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [isSyncing, showSyncStatus, syncStatusType]);
 
   const navigationItems = [
     { id: 'home', label: 'Home List', icon: Home },
@@ -208,6 +229,25 @@ export default function MainPage() {
           {renderActiveTabContent()}
         </main>
       </div>
+
+      {/* Floating Cloud Sync Status Pill */}
+      {status === 'authenticated' && showSyncStatus && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-full shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4">
+          {syncStatusType === 'syncing' ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin text-sky-500" />
+              <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300">Syncing to cloud...</span>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-center w-4 h-4 rounded-full bg-green-500/10 text-green-500">
+                <Check className="w-2.5 h-2.5 stroke-[3px]" />
+              </div>
+              <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300">Saved to cloud</span>
+            </>
+          )}
+        </div>
+      )}
 
     </div>
   );
