@@ -152,9 +152,6 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
-    if (hasFetchedRef.current) return;
-    hasFetchedRef.current = true;
-
     const fetchServerBookmarks = async () => {
       try {
         const res = await fetch(`/api/user/sync?t=${Date.now()}`, { cache: 'no-store' });
@@ -243,7 +240,21 @@ export const BookmarkProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     };
 
-    fetchServerBookmarks();
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
+      fetchServerBookmarks();
+    }
+
+    // Auto-sync when window is focused (switching devices/tabs)
+    const handleFocus = () => {
+      if (syncTimeoutRef.current !== null) return;
+      fetchServerBookmarks();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [status]);
 
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);

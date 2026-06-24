@@ -138,9 +138,6 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
-    if (hasFetchedRef.current) return;
-    hasFetchedRef.current = true;
-
     const fetchServerSettings = async () => {
       try {
         const res = await fetch(`/api/user/sync?t=${Date.now()}`, { cache: 'no-store' });
@@ -209,7 +206,21 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     };
 
-    fetchServerSettings();
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
+      fetchServerSettings();
+    }
+
+    // Auto-sync when window is focused (switching devices/tabs)
+    const handleFocus = () => {
+      if (syncTimeoutRef.current !== null) return;
+      fetchServerSettings();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [status]);
 
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
